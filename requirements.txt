@@ -1,8 +1,8 @@
-opencv-python
+streamlit
+tensorflow-cpu
+keras
 numpy
 pandas
-matplotlib
+pillow
+opencv-python-headless
 scikit-learn
-tensorflow
-torch
-torchvision
