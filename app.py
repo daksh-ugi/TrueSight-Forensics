@@ -1,5 +1,6 @@
-
 import os
+from dotenv import load_dotenv
+load_dotenv()
 import cv2
 import numpy as np
 import pandas as pd
@@ -158,13 +159,19 @@ CALIBRATION_TEMPERATURE = st.sidebar.slider(
 
 MAX_HISTORY_ENTRIES = 500
 
+# ----------------------- DATABASE INIT ----------------------
+
+try:
+    init_db()
+except Exception as e:
+    logger.warning(f"Could not initialize prediction history database: {e}", exc_info=True)
+
 # ----------------------- LOAD MODEL ------------------------
 
 try:
     with st.spinner("Loading AI model..."):
         model = load_cached_model(get_model_mtime())
 
-    init_db()
     st.success("Model initialized successfully.")
 
 except Exception as e:
