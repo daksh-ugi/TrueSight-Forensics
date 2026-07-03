@@ -16,6 +16,7 @@ from exif_analysis import extract_exif
 from gradcam import get_backbone_submodel, make_gradcam_heatmap, overlay_heatmap, find_last_conv_layer
 from ela_analysis import compute_ela, ela_uniformity_score
 from calibration import temperature_scale
+from forensic_filters import compute_luminance_gradient
 
 from exceptions import (
     PreprocessingError,
@@ -514,6 +515,12 @@ if analysis_mode == "Batch Analysis":
                 except Exception as e:
                     logger.warning(f"ELA failed for {uploaded_file.name}: {e}")
 
+                gradient_image = None
+                try:
+                    gradient_image = compute_luminance_gradient(raw_bytes)
+                except Exception as e:
+                    logger.warning(f"Luminance gradient failed for {uploaded_file.name}: {e}")
+
                 prediction_result = {
                     "filename": uploaded_file.name,
                     "label": label,
@@ -528,6 +535,7 @@ if analysis_mode == "Batch Analysis":
                     "exif": exif_data,
                     "ela_image": ela_image,
                     "ela_score": ela_score,
+                    "gradient_image": gradient_image,
                 }
 
                 batch_results.append(prediction_result)
@@ -650,42 +658,65 @@ if analysis_mode == "Batch Analysis":
                                     use_container_width=True,
                                 )
 
-                        if res["ela_image"] is not None:
-                            st.markdown(
-                                "<div style='margin-top:10px; font-weight:600;'>"
-                                "⚡ Error Level Analysis (ELA)"
-                                "</div>",
-                                unsafe_allow_html=True
-                            )
-
-                            ela_col1, ela_col2 = st.columns([1, 2])
-
-                            with ela_col1:
-                                st.image(
-                                    res["ela_image"],
-                                    channels="BGR",
-                                    caption="ELA map",
-                                    use_container_width=True
-                                )
-
-                            with ela_col2:
-                                score = res["ela_score"]
-
-                                if score is not None:
-                                    if score > 0.75:
-                                        ela_verdict = "🔴 High uniformity — AI pattern"
-                                    elif score > 0.5:
-                                        ela_verdict = "🟡 Moderate uniformity — uncertain"
-                                    else:
-                                        ela_verdict = "🟢 Non-uniform — natural photo pattern"
-
-                                    st.markdown(f"**ELA uniformity:** {ela_verdict}")
-                                    st.progress(score)
-                                    st.caption(
-                                        f"Uniformity score: {score:.2f} (0 = natural, 1 = AI-like). "
-                                        "AI-generated images often show uniform compression error "
-                                        "across all regions."
+                        # Forensic Tabs: ELA vs Luminance Gradient
+                        st.markdown(
+                            "<div style='margin-top:15px; font-weight:600;'>"
+                            "🔍 Localized Forensic Maps"
+                            "</div>",
+                            unsafe_allow_html=True
+                        )
+                        
+                        tab_ela, tab_gradient = st.tabs(["⚡ Error Level Analysis (ELA)", "🌊 Luminance Gradient"])
+                        
+                        with tab_ela:
+                            if res.get("ela_image") is not None:
+                                ela_col1, ela_col2 = st.columns([1, 2])
+                                with ela_col1:
+                                    st.image(
+                                        res["ela_image"],
+                                        channels="BGR",
+                                        caption="ELA map",
+                                        use_container_width=True
                                     )
+                                with ela_col2:
+                                    score = res["ela_score"]
+                                    if score is not None:
+                                        if score > 0.75:
+                                            ela_verdict = "🔴 High uniformity — AI pattern"
+                                        elif score > 0.5:
+                                            ela_verdict = "🟡 Moderate uniformity — uncertain"
+                                        else:
+                                            ela_verdict = "🟢 Non-uniform — natural photo pattern"
+
+                                        st.markdown(f"**ELA uniformity:** {ela_verdict}")
+                                        st.progress(score)
+                                        st.caption(
+                                            f"Uniformity score: {score:.2f} (0 = natural, 1 = AI-like). "
+                                            "AI-generated images often show uniform compression error "
+                                            "across all regions."
+                                        )
+                            else:
+                                st.info("ELA could not be computed for this image format.")
+                                
+                        with tab_gradient:
+                            if res.get("gradient_image") is not None:
+                                grad_col1, grad_col2 = st.columns([1, 2])
+                                with grad_col1:
+                                    st.image(
+                                        res["gradient_image"],
+                                        channels="BGR",
+                                        caption="Luminance Gradient Map",
+                                        use_container_width=True
+                                    )
+                                with grad_col2:
+                                    st.markdown("**Sobel Gradient Intensity Analysis**")
+                                    st.caption(
+                                        "High-frequency changes in brightness are highlighted using the Viridis colormap. "
+                                        "Inconsistencies, localized blur, or sharp unnatural boundaries typically signal compositing, "
+                                        "splicing, or regional generative fill."
+                                    )
+                            else:
+                                st.info("Gradient analysis is unavailable.")
 
                     with result_col:
                         if is_uncertain:
@@ -744,499 +775,324 @@ if analysis_mode == "Batch Analysis":
         st.markdown("</div>", unsafe_allow_html=True)
 
 elif analysis_mode == "Forensic Comparison":
-            
-            def run_forensic_analysis(uploaded_file):
-                raw_bytes = uploaded_file.read()
 
-                prediction = predict_image(raw_bytes)
+    def run_forensic_analysis(uploaded_file):
+        raw_bytes = uploaded_file.read()
 
-                exif_data = extract_exif(raw_bytes)
+        prediction = predict_image(raw_bytes)
 
-                ela_image = None
-                ela_score = None
+        exif_data = extract_exif(raw_bytes)
 
-                try:
-                    ela_image = compute_ela(raw_bytes)
+        ela_image = None
+        ela_score = None
 
-                    if ela_image is not None:
-                        ela_score = ela_uniformity_score(ela_image)
+        try:
+            ela_image = compute_ela(raw_bytes)
 
-                except Exception:
-                    pass
+            if ela_image is not None:
+                ela_score = ela_uniformity_score(ela_image)
 
-                gradcam_image = None
+        except Exception:
+            pass
 
-                try:
-                    bgr_image = decode_image_bytes(raw_bytes)
+        gradient_image = None
+        try:
+            gradient_image = compute_luminance_gradient(raw_bytes)
+        except Exception:
+            pass
 
-                    backbone_model = get_backbone_submodel(model)
-                    last_conv_layer = find_last_conv_layer(backbone_model)
+        gradcam_image = None
 
-                    heatmap = make_gradcam_heatmap(
-                        prediction["processed_image"],
-                        model,
-                        last_conv_layer
-                    )
+        try:
+            bgr_image = decode_image_bytes(raw_bytes)
 
-                    gradcam_image = overlay_heatmap(
-                        bgr_image,
-                        heatmap
-                    )
+            backbone_model = get_backbone_submodel(model)
+            last_conv_layer = find_last_conv_layer(backbone_model)
 
-                except Exception:
-                    pass
+            heatmap = make_gradcam_heatmap(
+                prediction["processed_image"],
+                model,
+                last_conv_layer
+            )
 
-                return {
-                    "filename": uploaded_file.name,
-                    "label": prediction["label"],
-                    "confidence": prediction["confidence"],
-                    "processed_image": prediction["processed_image"],
-                    "exif": exif_data,
-                    "ela_image": ela_image,
-                    "ela_score": ela_score,
-                    "gradcam": gradcam_image,
-                }
+            gradcam_image = overlay_heatmap(
+                bgr_image,
+                heatmap
+            )
 
-            st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
+        except Exception:
+            pass
 
-            st.subheader("🆚 Forensic Image Comparison")
+        return {
+            "filename": uploaded_file.name,
+            "label": prediction["label"],
+            "confidence": prediction["confidence"],
+            "processed_image": prediction["processed_image"],
+            "exif": exif_data,
+            "ela_image": ela_image,
+            "ela_score": ela_score,
+            "gradcam": gradcam_image,
+            "gradient_image": gradient_image,
+        }
 
-            col1, col2 = st.columns(2)
+    st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
 
-            with col1:
-                image_a = st.file_uploader(
-                    "Upload Image A",
-                    type=["jpg", "jpeg", "png", "webp"],
-                    key="compare_a"
-                )
+    st.subheader("🆚 Forensic Image Comparison")
 
-            with col2:
-                image_b = st.file_uploader(
-                    "Upload Image B",
-                    type=["jpg", "jpeg", "png", "webp"],
-                    key="compare_b"
-                )
+    col1, col2 = st.columns(2)
 
-            if image_a and image_b:
+    with col1:
+        image_a = st.file_uploader(
+            "Upload Image A",
+            type=["jpg", "jpeg", "png", "webp"],
+            key="compare_a"
+        )
 
-                result_a = run_forensic_analysis(image_a)
-                image_a.seek(0)
+    with col2:
+        image_b = st.file_uploader(
+            "Upload Image B",
+            type=["jpg", "jpeg", "png", "webp"],
+            key="compare_b"
+        )
 
-                result_b = run_forensic_analysis(image_b)
-                image_b.seek(0)
+    if image_a and image_b:
 
-                st.markdown("---")
+        result_a = run_forensic_analysis(image_a)
+        image_a.seek(0)
 
-                left, right = st.columns(2) 
-                with left:
+        result_b = run_forensic_analysis(image_b)
+        image_b.seek(0)
 
-                    st.markdown("### 🖼 Image A")
+        st.markdown("---")
 
-                    st.image(image_a, width="stretch")
+        left, right = st.columns(2) 
+        with left:
 
-                    st.metric(
-                        "Prediction",
-                        result_a["label"]
-                    )
+            st.markdown("### 🖼 Image A")
 
-                    st.metric(
-                        "Confidence",
-                        f"{result_a['confidence']*100:.1f}%"
-                    )
-                    if result_a["gradcam"] is not None:
+            st.image(image_a, use_container_width=True)
 
-                        st.markdown("#### Grad-CAM")
+            st.metric(
+                "Prediction",
+                result_a["label"]
+            )
 
-                        st.image(
-                        result_a["gradcam"],
-                        channels="BGR",
-                        use_column_width=True
-                        )  
+            st.metric(
+                "Confidence",
+                f"{result_a['confidence']*100:.1f}%"
+            )
+            if result_a["gradcam"] is not None:
 
-                    if result_a["ela_image"] is not None:
-                        st.image(
-                            result_a["ela_image"],
-                            caption="ELA Analysis",
-                            use_column_width=True
-                        )
+                st.markdown("#### Grad-CAM")
 
-                    exif_a = result_a["exif"]
+                st.image(
+                    result_a["gradcam"],
+                    channels="BGR",
+                    use_container_width=True
+                )  
 
-                    st.markdown("#### Metadata")
-
-                    st.write(
-                        exif_a["suspicion_reason"]
-                    )
-
-                with right:
-
-                    st.markdown("### 🖼 Image B")
-
-                    st.image(image_b, width="stretch")
-
-                    st.metric(
-                        "Prediction",
-                        result_b["label"]
-                    )
-
-                    st.metric(
-                        "Confidence",
-                        f"{result_b['confidence']*100:.1f}%"
-                    )
-                    if result_b["gradcam"] is not None:
-
-                        st.markdown("#### Grad-CAM")
-
-                        st.image(
-                        result_b["gradcam"],
-                        channels="BGR",
-                        use_column_width=True
-                        )    
-                    
-
-                    if result_b["ela_image"] is not None:
-                        st.image(
-                            result_b["ela_image"],
-                            caption="ELA Analysis",
-                            use_column_width=True
-                        )
-
-                    exif_b = result_b["exif"]
-
-                    st.markdown("#### Metadata")
-
-                    st.write(
-                        exif_b["suspicion_reason"]
-                    ) 
-                st.markdown("---")
-
-                st.subheader("📊 Comparison Insights")
-                st.markdown("### 🧾 Metadata Comparison")
-
-                confidence_diff = abs(
-                    result_a["confidence"] -
-                    result_b["confidence"]
-                )
-
-                st.metric(
-                    "Confidence Difference",
-                    f"{confidence_diff*100:.1f}%"
-                )
-
-                if result_a["label"] != result_b["label"]:
-                    st.warning(
-                        "Classification mismatch detected."
-                    )
-                else:
-                    st.success(
-                        "Both images received the same classification."
-                    )
-
-                if result_a["confidence"] > result_b["confidence"]:
-                    st.info(
-                        f"🟥 {result_a['filename']} has the stronger prediction confidence."
-                    )
-                else:
-                    st.info(
-                        f"🟥 {result_b['filename']} has the stronger prediction confidence."
-                    )
-# ------------------ EXIF COMPARISON ----------------
-
-                exif_a = result_a["exif"]
-                exif_b = result_b["exif"]
-
-                comparison_rows = [
-                    {
-                        "Field": "Has EXIF",
-                        "Image A": exif_a.get("has_exif", "N/A"),
-                        "Image B": exif_b.get("has_exif", "N/A"),
-                    },
-                    {
-                        "Field": "EXIF Field Count",
-                        "Image A": exif_a.get("field_count", "N/A"),
-                        "Image B": exif_b.get("field_count", "N/A"),
-                    },
-                    {
-                        "Field": "Software",
-                        "Image A": exif_a.get("software", "N/A"),
-                        "Image B": exif_b.get("software", "N/A"),
-                    },
-                    {
-                        "Field": "Camera Make",
-                        "Image A": exif_a.get("make", "N/A"),
-                        "Image B": exif_b.get("make", "N/A"),
-                    },
-                    {
-                        "Field": "Camera Model",
-                        "Image A": exif_a.get("model", "N/A"),
-                        "Image B": exif_b.get("model", "N/A"),
-                    },
-                    {
-                        "Field": "Capture Date",
-                        "Image A": exif_a.get("datetime", "N/A"),
-                        "Image B": exif_b.get("datetime", "N/A"),
-                    },
-                    {
-                        "Field": "GPS Present",
-                        "Image A": exif_a.get("gps_present", "N/A"),
-                        "Image B": exif_b.get("gps_present", "N/A"),
-                    },
-                    {
-                        "Field": "AI Software Detected",
-                        "Image A": exif_a.get("ai_software_detected", "N/A"),
-                        "Image B": exif_b.get("ai_software_detected", "N/A"),
-                    },
-                    {
-                        "Field": "Suspicious",
-                        "Image A": exif_a.get("suspicious", "N/A"),
-                        "Image B": exif_b.get("suspicious", "N/A"),
-                    },
-                ]
-
-                comparison_df = pd.DataFrame(comparison_rows)
-
-                st.dataframe(
-                    comparison_df,
+            if result_a["ela_image"] is not None:
+                st.image(
+                    result_a["ela_image"],
+                    caption="ELA Analysis",
                     use_container_width=True
                 )
 
-                differences = []
+            if result_a.get("gradient_image") is not None:
+                st.image(
+                    result_a["gradient_image"],
+                    caption="Luminance Gradient Map",
+                    use_container_width=True
+                )
 
-                for row in comparison_rows:
+            exif_a = result_a["exif"]
 
-                    if str(row["Image A"]) != str(row["Image B"]):
-                        differences.append(row["Field"])
+            st.markdown("#### Metadata")
 
-                if differences:
+            st.write(
+                exif_a["suspicion_reason"]
+            )
 
-                    st.warning(
-                        "⚠ Metadata differences detected in: "
-                        + ", ".join(differences)
-                    )
+        with right:
 
-                else:
+            st.markdown("### 🖼 Image B")
 
-                    st.success(
-                        "✅ No metadata differences detected."
-                    )
-#------------------------ METADATA VERDICT ----------------
+            st.image(image_b, use_container_width=True)
 
-                    st.markdown("### 🚨 Metadata Verdict")
+            st.metric(
+                "Prediction",
+                result_b["label"]
+            )
 
-                    if exif_a.get("suspicious", False):
-                        st.warning(
-                            f"Image A: {exif_a.get('suspicion_reason', 'N/A')}"
-                        )
-                    else:
-                        st.success(
-                            f"Image A: {exif_a.get('suspicion_reason', 'N/A')}"
-                        )
+            st.metric(
+                "Confidence",
+                f"{result_b['confidence']*100:.1f}%"
+            )
+            if result_b["gradcam"] is not None:
 
-                    if exif_b.get("suspicious", False):
-                        st.warning(
-                            f"Image B: {exif_b.get('suspicion_reason', 'N/A')}"
-                        )
-                    else:
-                        st.success(
-                            f"Image B: {exif_b.get('suspicion_reason', 'N/A')}"
-                        )
-                
+                st.markdown("#### Grad-CAM")
 
+                st.image(
+                    result_b["gradcam"],
+                    channels="BGR",
+                    use_container_width=True
+                )    
 
-# ----------------------- PREDICTION HISTORY / CSV EXPORT --
+            if result_b["ela_image"] is not None:
+                st.image(
+                    result_b["ela_image"],
+                    caption="ELA Analysis",
+                    use_container_width=True
+                )
 
-if st.session_state.get("prediction_history"):
-    st.markdown("<br>", unsafe_allow_html=True)
-    st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
-    st.subheader("🗂 Prediction History")
+            if result_b.get("gradient_image") is not None:
+                st.image(
+                    result_b["gradient_image"],
+                    caption="Luminance Gradient Map",
+                    use_container_width=True
+                )
 
-    preview = st.session_state.prediction_history[-50:]
+            exif_b = result_b["exif"]
 
-    if preview:
-        preview_df = pd.DataFrame(preview)
-        st.dataframe(preview_df, use_container_width=True)
-    else:
-        st.write("No recent history to preview.")
+            st.markdown("#### Metadata")
 
-    c1, c2 = st.columns([1, 1])
+            st.write(
+                exif_b["suspicion_reason"]
+            ) 
+        st.markdown("---")
 
-    with c1:
-        if st.button("⬇️ Prepare CSV Report"):
-            full_df = pd.DataFrame(st.session_state.prediction_history)
-            st.session_state.prediction_csv = full_df.to_csv(index=False).encode("utf-8")
-            st.success("Report prepared — click Download to save the CSV.")
+        st.subheader("📊 Comparison Insights")
+        st.markdown("### 🧾 Metadata Comparison")
 
-    with c2:
-        if st.button("🧹 Clear History"):
-            clear_history()
-            st.session_state.prediction_history = []
-            st.session_state.prediction_history_hashes = set()
-            st.session_state.prediction_csv = None
-            st.success("Prediction history cleared.")
-
-    if st.session_state.get("prediction_csv") is not None:
-        st.download_button(
-            label="⬇️ Download Report as CSV",
-            data=st.session_state.prediction_csv,
-            file_name=f"pixeltruth_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-            mime="text/csv",
+        confidence_diff = abs(
+            result_a["confidence"] -
+            result_b["confidence"]
         )
 
-    st.markdown("</div>", unsafe_allow_html=True)
+        st.metric(
+            "Confidence Difference",
+            f"{confidence_diff*100:.1f}%"
+        )
 
-# ----------------------- MODEL ANALYTICS ------------------
-
-st.divider()
-st.markdown("<br>", unsafe_allow_html=True)
-st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
-st.markdown("### 📊 Model Analytics Dashboard")
-st.caption("Comprehensive performance metrics and visualizations of the deepfake detection model")
-
-cached_metrics = load_cached_metrics()
-
-if cached_metrics is None:
-    st.warning(
-        "⚠️ No evaluation data found. The analytics dashboard requires "
-        "real model evaluation results."
-    )
-
-    st.markdown(
-        "Run the evaluation harness to generate real metrics:\n\n"
-        "```bash\n"
-        "python evaluate.py --test-dir path/to/test_data\n"
-        "```\n\n"
-        "The test directory should contain `real/` and `fake/` subdirectories "
-        "with labelled images."
-    )
-
-else:
-    evaluated_at = get_evaluated_at(cached_metrics)
-    total_imgs = get_total_images(cached_metrics)
-
-    if evaluated_at or total_imgs:
-        meta_parts = []
-
-        if evaluated_at:
-            meta_parts.append(f"Evaluated at: {evaluated_at}")
-
-        if total_imgs:
-            meta_parts.append(f"{total_imgs:,} test images")
-
-        st.caption(" | ".join(meta_parts))
-
-    metrics = get_sample_metrics(cached_metrics)
-    class_stats = get_class_statistics(cached_metrics)
-
-    if metrics:
-        st.markdown("#### 📈 Performance Metrics")
-
-        col_acc, col_prec, col_rec, col_f1 = st.columns(4)
-
-        with col_acc:
-            st.metric(
-                label="Accuracy",
-                value=f"{metrics['accuracy']:.1f}%",
-                help="Overall correctness: (TP + TN) / Total"
+        if result_a["label"] != result_b["label"]:
+            st.warning(
+                "Classification mismatch detected."
+            )
+        else:
+            st.success(
+                "Both images received the same classification."
             )
 
-        with col_prec:
-            st.metric(
-                label="Precision",
-                value=f"{metrics['precision']:.1f}%",
-                help="Positive accuracy: TP / (TP + FP)"
+        if result_a["confidence"] > result_b["confidence"]:
+            st.info(
+                f"🟥 {result_a['filename']} has the stronger prediction confidence."
+            )
+        else:
+            st.info(
+                f"🟥 {result_b['filename']} has the stronger prediction confidence."
+            )
+# ------------------ EXIF COMPARISON ----------------
+
+        exif_a = result_a["exif"]
+        exif_b = result_b["exif"]
+
+        comparison_rows = [
+            {
+                "Field": "Has EXIF",
+                "Image A": exif_a.get("has_exif", "N/A"),
+                "Image B": exif_b.get("has_exif", "N/A"),
+            },
+            {
+                "Field": "EXIF Field Count",
+                "Image A": exif_a.get("field_count", "N/A"),
+                "Image B": exif_b.get("field_count", "N/A"),
+            },
+            {
+                "Field": "Software",
+                "Image A": exif_a.get("software", "N/A"),
+                "Image B": exif_b.get("software", "N/A"),
+            },
+            {
+                "Field": "Camera Make",
+                "Image A": exif_a.get("make", "N/A"),
+                "Image B": exif_b.get("make", "N/A"),
+            },
+            {
+                "Field": "Camera Model",
+                "Image A": exif_a.get("model", "N/A"),
+                "Image B": exif_b.get("model", "N/A"),
+            },
+            {
+                "Field": "Capture Date",
+                "Image A": exif_a.get("datetime", "N/A"),
+                "Image B": exif_b.get("datetime", "N/A"),
+            },
+            {
+                "Field": "GPS Present",
+                "Image A": exif_a.get("gps_present", "N/A"),
+                "Image B": exif_b.get("gps_present", "N/A"),
+            },
+            {
+                "Field": "AI Software Detected",
+                "Image A": exif_a.get("ai_software_detected", "N/A"),
+                "Image B": exif_b.get("ai_software_detected", "N/A"),
+            },
+            {
+                "Field": "Suspicious",
+                "Image A": exif_a.get("suspicious", "N/A"),
+                "Image B": exif_b.get("suspicious", "N/A"),
+            },
+        ]
+
+        comparison_df = pd.DataFrame(comparison_rows)
+
+        st.dataframe(
+            comparison_df,
+            use_container_width=True
+        )
+
+        differences = []
+
+        for row in comparison_rows:
+
+            if str(row["Image A"]) != str(row["Image B"]):
+                differences.append(row["Field"])
+
+        if differences:
+
+            st.warning(
+                "⚠ Metadata differences detected in: "
+                + ", ".join(differences)
             )
 
-        with col_rec:
-            st.metric(
-                label="Recall",
-                value=f"{metrics['recall']:.1f}%",
-                help="True positive rate: TP / (TP + FN)"
+        else:
+
+            st.success(
+                "✅ No metadata differences detected."
             )
+#------------------------ METADATA VERDICT ----------------
 
-        with col_f1:
-            st.metric(
-                label="F1-Score",
-                value=f"{metrics['f1_score']:.1f}%",
-                help="Harmonic mean of precision & recall"
-            )
+            st.markdown("### 🚨 Metadata Verdict")
 
-        st.markdown("<br>", unsafe_allow_html=True)
-        st.divider()
+            if exif_a.get("suspicious", False):
+                st.warning(
+                    f"Image A: {exif_a.get('suspicion_reason', 'N/A')}"
+                )
+            else:
+                st.success(
+                    f"Image A: {exif_a.get('suspicion_reason', 'N/A')}"
+                )
 
-    st.markdown("#### 🎯 Classification Analysis")
+            if exif_b.get("suspicious", False):
+                st.warning(
+                    f"Image B: {exif_b.get('suspicion_reason', 'N/A')}"
+                )
+            else:
+                st.success(
+                    f"Image B: {exif_b.get('suspicion_reason', 'N/A')}"
+                )
+                
 
-    col_cm, col_roc = st.columns(2)
-
-    with col_cm:
-        cm_fig = get_confusion_matrix_plot(cached_metrics)
-
-        if cm_fig:
-            st.plotly_chart(
-                cm_fig,
-                use_container_width=True,
-                config={'scrollZoom': True, 'displayModeBar': True}
-            )
-
-            st.caption(get_confusion_matrix_caption())
-
-    with col_roc:
-        roc_fig = get_roc_curve_plot(cached_metrics)
-
-        if roc_fig:
-            st.plotly_chart(
-                roc_fig,
-                use_container_width=True,
-                config={'scrollZoom': True, 'displayModeBar': True}
-            )
-
-            st.caption(get_roc_curve_caption())
-
-    st.markdown("<br>", unsafe_allow_html=True)
-    st.divider()
-
-    st.markdown("#### 📊 Data & Class-Level Insights")
-
-    col_dist, col_stats = st.columns(2)
-
-    with col_dist:
-        dist_fig = get_dataset_distribution_plot(cached_metrics)
-
-        if dist_fig:
-            st.plotly_chart(
-                dist_fig,
-                use_container_width=True,
-                config={'scrollZoom': True, 'displayModeBar': True}
-            )
-
-            st.caption(get_dataset_distribution_caption())
-
-    with col_stats:
-        if class_stats:
-            st.markdown("**Per-Class Performance**")
-            st.caption("Accuracy breakdown by image category")
-
-            for idx, (class_label, stats) in enumerate(class_stats.items()):
-                if idx > 0:
-                    st.divider()
-
-                icon = "🟢" if class_label == "Real" else "🔴"
-                st.markdown(f"#### {icon} {class_label} Images")
-
-                col_s1, col_s2, col_s3 = st.columns(3)
-
-                with col_s1:
-                    st.metric(
-                        label="Total Samples",
-                        value=f"{stats['total_samples']:,}"
-                    )
-
-                with col_s2:
-                    st.metric(
-                        label="Correct Predictions",
-                        value=f"{stats['correctly_classified']:,}"
-                    )
-
-    st.markdown("</div>", unsafe_allow_html=True)
 
 # ----------------------- PREDICTION HISTORY / CSV EXPORT --
 
