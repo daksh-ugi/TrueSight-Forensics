@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import time
+from io import BytesIO
 from fastapi import BackgroundTasks, FastAPI, UploadFile, File, HTTPException, Request, Query 
 import os
 from fastapi.middleware.cors import CORSMiddleware
@@ -8,6 +9,7 @@ from fastapi.responses import JSONResponse
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded 
+from PIL import Image, UnidentifiedImageError 
 
 # Import our unified predict pipeline
 from predict import predict_image 
@@ -50,6 +52,15 @@ async def _read_image_bytes(file: UploadFile) -> bytes:
             raise HTTPException(status_code=413, detail="Uploaded image is too large.")
         chunks.append(chunk)
     return b"".join(chunks)
+
+
+def _validate_image_bytes(image_bytes: bytes) -> None:
+    try:
+        with Image.open(BytesIO(image_bytes)) as img:
+            img.verify()
+    except (UnidentifiedImageError, OSError) as exc:
+        raise HTTPException(status_code=400, detail="Uploaded image is corrupted or invalid.") from exc
+
 
 
 def _rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded):
@@ -180,6 +191,7 @@ async def detect_image_async(
 
     try:
         image_bytes = await _read_image_bytes(file)
+        _validate_image_bytes(image_bytes)
         task_id = task_store.create_task()
         background_tasks.add_task(_run_inference_task, task_id, image_bytes, temperature)
         return {"task_id": task_id}
