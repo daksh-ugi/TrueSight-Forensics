@@ -469,6 +469,8 @@ def test_async_accepts_valid_temperature(monkeypatch):
             "label": "Fake",
             "confidence": 0.2,
             "raw": [0.2], 
+            "face_detected": True,
+            "face_box": (5, 6, 7, 8),
         },
     )
     client = TestClient(api_main.app)
@@ -479,4 +481,39 @@ def test_async_accepts_valid_temperature(monkeypatch):
     )
     assert response.status_code == 202
     assert "task_id" in response.json() 
+
+
+def test_api_rejects_corrupted_image_with_400(monkeypatch):
+    monkeypatch.setattr(api_main, "API_KEY", "")
+    
+    def fake_predict(image_bytes, temperature=1.0):
+        raise ValueError("The uploaded file appears to be corrupted or is not a valid image.")
+
+    monkeypatch.setattr(api_main, "predict_image", fake_predict)
+    client = TestClient(api_main.app)
+
+    response = client.post(
+        "/api/detect", files={"file": ("sample.png", b"corrupted-bytes", "image/png")}
+    )
+
+    assert response.status_code == 400
+    assert "corrupted" in response.json()["detail"]
+
+
+def test_async_detect_rejects_corrupted_image_with_400(monkeypatch):
+    monkeypatch.setattr(api_main, "API_KEY", "")
+    
+    def fake_predict(image_bytes, temperature=1.0):
+        raise TypeError("image_input must be a file path, raw bytes, or numpy array.")
+
+    monkeypatch.setattr(api_main, "predict_image", fake_predict)
+    client = TestClient(api_main.app)
+
+    response = client.post(
+        "/api/detect/async", files={"file": ("sample.png", b"corrupted-bytes", "image/png")}
+    )
+
+    assert response.status_code == 400
+    assert "must be" in response.json()["detail"]
+
 

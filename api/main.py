@@ -155,6 +155,9 @@ async def detect_image(
     except PreprocessingError as e:
         logger.error(f"Preprocessing error: {e}")
         raise HTTPException(status_code=422, detail=str(e))
+    except (ValueError, TypeError) as e:
+        logger.error(f"Validation error: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
     except ModelExecutionError as e:
         logger.error(f"Model error: {e}")
         raise HTTPException(status_code=500, detail="Internal server error during model execution.")
@@ -186,6 +189,9 @@ async def detect_image_async(
     except PreprocessingError as e:
         logger.error(f"Preprocessing error: {e}")
         raise HTTPException(status_code=422, detail=str(e))
+    except (ValueError, TypeError) as e:
+        logger.error(f"Validation error: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
     except ModelExecutionError as e:
         logger.error(f"Model error: {e}")
         raise HTTPException(status_code=500, detail="Internal server error during model execution.")
