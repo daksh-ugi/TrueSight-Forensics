@@ -22,3 +22,25 @@ def compute_luminance_gradient(image_bytes: bytes) -> np.ndarray | None:
         return color_mapped
     except Exception:
         return None
+
+def compute_noise_residual(image_bytes: bytes) -> np.ndarray | None:
+    """Computes the noise residual map of an image using a median filter subtraction."""
+    try:
+        img = decode_image_bytes(image_bytes)
+        if img is None:
+            return None
+        
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        gray_f = gray.astype(np.float32)
+        
+        filtered = cv2.medianBlur(gray, 3).astype(np.float32)
+        residual = np.abs(gray_f - filtered)
+        
+        amplified = residual * 15.0
+        clipped = np.clip(amplified, 0, 255).astype(np.uint8)
+        
+        color_mapped = cv2.applyColorMap(clipped, cv2.COLORMAP_MAGMA)
+        return color_mapped
+    except Exception:
+        return None
+

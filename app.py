@@ -17,7 +17,7 @@ from exif_analysis import extract_exif
 from gradcam import get_backbone_submodel, make_gradcam_heatmap, overlay_heatmap, find_last_conv_layer
 from ela_analysis import compute_ela, ela_uniformity_score
 from calibration import temperature_scale
-from forensic_filters import compute_luminance_gradient
+from forensic_filters import compute_luminance_gradient, compute_noise_residual
 
 from exceptions import (
     PreprocessingError,
@@ -528,6 +528,12 @@ if analysis_mode == "Batch Analysis":
                 except Exception as e:
                     logger.warning(f"Luminance gradient failed for {uploaded_file.name}: {e}")
 
+                noise_residual_image = None
+                try:
+                    noise_residual_image = compute_noise_residual(raw_bytes)
+                except Exception as e:
+                    logger.warning(f"Noise residual analysis failed for {uploaded_file.name}: {e}")
+
                 prediction_result = {
                     "filename": uploaded_file.name,
                     "label": label,
@@ -543,6 +549,7 @@ if analysis_mode == "Batch Analysis":
                     "ela_image": ela_image,
                     "ela_score": ela_score,
                     "gradient_image": gradient_image,
+                    "noise_residual_image": noise_residual_image,
                 }
 
                 batch_results.append(prediction_result)
@@ -673,7 +680,7 @@ if analysis_mode == "Batch Analysis":
                             unsafe_allow_html=True
                         )
                         
-                        tab_ela, tab_gradient = st.tabs(["⚡ Error Level Analysis (ELA)", "🌊 Luminance Gradient"])
+                        tab_ela, tab_gradient, tab_noise = st.tabs(["⚡ Error Level Analysis (ELA)", "🌊 Luminance Gradient", "🌌 Noise Residuals"])
                         
                         with tab_ela:
                             if res.get("ela_image") is not None:
@@ -724,6 +731,26 @@ if analysis_mode == "Batch Analysis":
                                     )
                             else:
                                 st.info("Gradient analysis is unavailable.")
+
+                        with tab_noise:
+                            if res.get("noise_residual_image") is not None:
+                                noise_col1, noise_col2 = st.columns([1, 2])
+                                with noise_col1:
+                                    st.image(
+                                        res["noise_residual_image"],
+                                        channels="BGR",
+                                        caption="Noise Residual Map",
+                                        use_container_width=True
+                                    )
+                                with noise_col2:
+                                    st.markdown("**High-Frequency Noise Residual Map**")
+                                    st.caption(
+                                        "This isolates high-frequency noise using a median filter subtraction, mapped to the Magma colormap. "
+                                        "Natural camera shots show a uniform distribution of noise, whereas spliced, edited, or "
+                                        "generative regions typically display distinct local noise anomalies or flat zones."
+                                    )
+                            else:
+                                st.info("Noise residual analysis is unavailable.")
 
                     with result_col:
                         if is_uncertain:
@@ -808,6 +835,12 @@ elif analysis_mode == "Forensic Comparison":
         except Exception:
             pass
 
+        noise_residual_image = None
+        try:
+            noise_residual_image = compute_noise_residual(raw_bytes)
+        except Exception:
+            pass
+
         gradcam_image = None
 
         try:
@@ -840,6 +873,7 @@ elif analysis_mode == "Forensic Comparison":
             "ela_score": ela_score,
             "gradcam": gradcam_image,
             "gradient_image": gradient_image,
+            "noise_residual_image": noise_residual_image,
         }
 
     st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
@@ -912,6 +946,13 @@ elif analysis_mode == "Forensic Comparison":
                     use_container_width=True
                 )
 
+            if result_a.get("noise_residual_image") is not None:
+                st.image(
+                    result_a["noise_residual_image"],
+                    caption="Noise Residual Map",
+                    use_container_width=True
+                )
+
             exif_a = result_a["exif"]
 
             st.markdown("#### Metadata")
@@ -956,6 +997,13 @@ elif analysis_mode == "Forensic Comparison":
                 st.image(
                     result_b["gradient_image"],
                     caption="Luminance Gradient Map",
+                    use_container_width=True
+                )
+
+            if result_b.get("noise_residual_image") is not None:
+                st.image(
+                    result_b["noise_residual_image"],
+                    caption="Noise Residual Map",
                     use_container_width=True
                 )
 
