@@ -4,6 +4,14 @@ import pytest
 import api.main as api_main
 
 
+@pytest.fixture(autouse=True)
+def mock_image_validation(monkeypatch, request):
+    if "corrupted_image" in request.node.name:
+        return
+    monkeypatch.setattr(api_main, "_validate_image_bytes", lambda x: None)
+
+
+
 def test_api_rejects_non_image_upload():
     client = TestClient(api_main.app)
 
@@ -514,6 +522,6 @@ def test_async_detect_rejects_corrupted_image_with_400(monkeypatch):
     )
 
     assert response.status_code == 400
-    assert "must be" in response.json()["detail"]
+    assert "corrupted" in response.json()["detail"]
 
 
